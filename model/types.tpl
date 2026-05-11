@@ -4,8 +4,10 @@ type (
 	}
 
 	default{{.upperStartCamelObject}}Model struct {
-		{{if .withCache}}sqlc.CachedConn{{else}}conn sqlx.SqlConn{{end}}
-		table string
+		gorm.Interface[{{.upperStartCamelObject}}]
+{{- if .withCache}}
+		cache cache.Cache
+{{- end}}
 	}
 
 	{{.upperStartCamelObject}} struct {

@@ -1,30 +1,73 @@
 func (m *default{{.upperStartCamelObject}}Model) FindOneBy{{.upperField}}(ctx context.Context, {{.in}}) (*{{.upperStartCamelObject}}, error) {
-	{{if .withCache}}{{.cacheKey}}
+{{- if .withCache}}
+	{{.cacheKey}}
+
 	var resp {{.upperStartCamelObject}}
-	err := m.QueryRowIndexCtx(ctx, &resp, {{.cacheKeyVariable}}, m.formatPrimary, func(ctx context.Context, conn sqlx.SqlConn, v any) (i any, e error) {
-		query := fmt.Sprintf("select %s from %s where {{.originalField}} limit 1", {{.lowerStartCamelObject}}Rows, m.table)
-		if err := conn.QueryRowCtx(ctx, &resp, query, {{.lowerStartCamelField}}); err != nil {
-			return nil, err
+	var primaryKey any
+	found := false
+
+	err := m.cache.TakeWithExpireCtx(ctx, &primaryKey, {{.cacheKeyVariable}}, func(val any, expire time.Duration) error {
+	{{- if .postgreSql}}
+		row, er := m.Where(strings.NewReplacer(
+			"$10", "?", "$9", "?", "$8", "?", "$7", "?", "$6", "?", "$5", "?", "$4", "?", "$3", "?", "$2", "?", "$1", "?",
+		).Replace({{ printf "%q" .originalField }}), {{.lowerStartCamelField}}).First(ctx)
+	{{- else}}
+		row, er := m.Where("{{.originalField}}", {{.lowerStartCamelField}}).First(ctx)
+	{{- end}}
+		if er != nil {
+			if errors.Is(er, gorm.ErrRecordNotFound) {
+				return sql.ErrNoRows
+			}
+			return er
 		}
-		return resp.{{.upperStartCamelPrimaryKey}}, nil
-	}, m.queryPrimary)
-	switch err {
-	case nil:
+
+		resp = row
+		found = true
+		primaryKey = row.{{.upperStartCamelPrimaryKey}}
+
+		return m.cache.SetWithExpireCtx(ctx, m.formatPrimary(primaryKey), &resp, expire+5*time.Second)
+	})
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound) || m.cache.IsNotFound(err) {
+			return nil, ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	if found {
 		return &resp, nil
-	case sqlc.ErrNotFound:
+	}
+
+	err = m.cache.TakeCtx(ctx, &resp, m.formatPrimary(primaryKey), func(v any) error {
+		return m.queryPrimary(ctx, v, primaryKey)
+	})
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound) || m.cache.IsNotFound(err) {
+			return nil, ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return &resp, nil
+{{- else}}
+	{{- if .postgreSql}}
+	row, err := m.Where(strings.NewReplacer(
+		"$10", "?", "$9", "?", "$8", "?", "$7", "?", "$6", "?", "$5", "?", "$4", "?", "$3", "?", "$2", "?", "$1", "?",
+	).Replace({{ printf "%q" .originalField }}), {{.lowerStartCamelField}}).First(ctx)
+	{{- else}}
+	row, err := m.Where("{{.originalField}}", {{.lowerStartCamelField}}).First(ctx)
+	{{- end}}
+	switch {
+	case err == nil:
+		return &row, nil
+	case errors.Is(err, gorm.ErrRecordNotFound):
 		return nil, ErrNotFound
 	default:
 		return nil, err
 	}
-}{{else}}var resp {{.upperStartCamelObject}}
-	query := fmt.Sprintf("select %s from %s where {{.originalField}} limit 1", {{.lowerStartCamelObject}}Rows, m.table )
-	err := m.conn.QueryRowCtx(ctx, &resp, query, {{.lowerStartCamelField}})
-	switch err {
-	case nil:
-		return &resp, nil
-	case sqlx.ErrNotFound:
-		return nil, ErrNotFound
-	default:
-		return nil, err
-	}
-}{{end}}
+{{- end}}
+}
